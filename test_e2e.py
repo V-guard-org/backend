@@ -108,7 +108,9 @@ def main():
 
     # A saúde do dispositivo chega a cada ciclo (RF32).
     h = httpx.get(base + "/api/health", auth=VIEWER).json()
-    assert h["link"] == "wifi" and h["pending"]["events"] == 0 and h["last_contact"]
+    assert h["link"] == "wifi" and h["last_contact"]
+    # A saúde do fim do ciclo já mostra a fila vazia, não a de antes do envio.
+    assert h["pending"] == {"telemetry": 0, "events": 0, "photos": 0}
 
     # Confirmação perdida: o servidor gravou, mas a resposta não chegou à Pi.
     # A Pi reenvia tudo, e o servidor não duplica nada (RF22, RNF26).
