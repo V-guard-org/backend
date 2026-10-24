@@ -46,7 +46,7 @@ DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
 
 # Uma foto VGA em JPEG tem ~50 kB; acima disto é erro, não foto.
 MAX_PHOTO_BYTES = 5 * 1024 * 1024
-# Mesmo teto do dev_server.py (1 linha/s = ~3 h).
+# Teto de linhas por consulta (1 linha/s = ~3 h).
 TELEMETRY_LIMIT = 10000
 
 
@@ -233,24 +233,20 @@ def receive_photo(
 
 
 # ============================================================
-# CONSULTA (dashboard) — mesmo formato do dashboard/dev_server.py
+# CONSULTA (dashboard) — rotas descritas no README do dashboard
 # ============================================================
 
 # ponytail: um dispositivo só; com a frota, as rotas ganham ?device= ou
 # /api/devices/<id>/... e as consultas filtram por device_id.
 
 def event_json(row):
-    has_photo = row["photo"] is not None
     return {
         "id": str(row["id"]),
         "type": row["type"],
         "ts": row["ts"],
         "score": row["score"],
         "data": row["data"],
-        "has_photo": has_photo,
-        # No servidor os metadados sempre chegaram; a foto, só pelo Wi-Fi.
-        "meta_synced": 1,
-        "photo_synced": 1 if has_photo else 0,
+        "has_photo": row["photo"] is not None,
     }
 
 

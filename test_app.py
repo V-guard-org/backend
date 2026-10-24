@@ -118,8 +118,8 @@ def test_dashboard(client, pi, event_id):
 
     events = client.get("/api/events", auth=VIEWER).json()
     assert [e["ts"] for e in events] == [1003.0, 1002.5]
-    assert events[1]["has_photo"] and events[1]["photo_synced"] == 1 and events[1]["meta_synced"] == 1
-    assert not events[0]["has_photo"] and events[0]["photo_synced"] == 0
+    assert events[1]["has_photo"]
+    assert not events[0]["has_photo"]
     assert client.get("/api/events?limit=1", auth=VIEWER).json() == events[:1]
 
     detail = client.get("/api/events/" + event_id, auth=VIEWER).json()
