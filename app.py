@@ -158,6 +158,7 @@ class Event(BaseModel):
     ts: float
     score: Optional[float] = None
     data: dict = {}
+    has_photo: bool = False   # a foto existe na Pi, mesmo que ainda não tenha chegado
     window: list = []
 
 
@@ -188,10 +189,11 @@ def receive_telemetry(batch: TelemetryBatch, device_id: str = Depends(device)):
 def receive_event(event_id: uuid.UUID, event: Event, device_id: str = Depends(device)):
     with db() as cur:
         cur.execute(
-            "INSERT INTO events (id, device_id, type, ts, score, data, event_window)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
+            "INSERT INTO events (id, device_id, type, ts, score, data, event_window, photo_expected)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
             (str(event_id), device_id, event.type, event.ts, event.score,
-             psycopg2.extras.Json(event.data), psycopg2.extras.Json(event.window))
+             psycopg2.extras.Json(event.data), psycopg2.extras.Json(event.window),
+             event.has_photo)
         )
     return {"ok": True}
 
@@ -247,6 +249,8 @@ def event_json(row):
         "score": row["score"],
         "data": row["data"],
         "has_photo": row["photo"] is not None,
+        # foto tirada, mas ainda no cartão da Pi esperando o Wi-Fi
+        "photo_pending": row["photo_expected"] and row["photo"] is None,
     }
 
 

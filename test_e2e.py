@@ -92,12 +92,17 @@ def main():
     assert pi.sync_once() == "cellular"
     assert manager.pending_counts() == {"telemetry": 0, "events": 0, "photos": 2}
     assert counts(base) == (2, 0, rows)
+    # O dashboard sabe que as fotos existem e estão no cartão.
+    events = httpx.get(base + "/api/events", auth=VIEWER).json()
+    assert all(e["photo_pending"] for e in events)
 
     # Wi-Fi: as fotos sobem, e são as mesmas que a Pi gravou.
     link[0] = "wifi"
     assert pi.sync_once() == "wifi"
     assert manager.pending_counts() == {"telemetry": 0, "events": 0, "photos": 0}
     assert counts(base) == (2, 2, rows)
+    events = httpx.get(base + "/api/events", auth=VIEWER).json()
+    assert not any(e["photo_pending"] for e in events)
     event_id = httpx.get(base + "/api/events", auth=VIEWER).json()[0]["id"]
     assert httpx.get(base + "/api/events/%s/photo" % event_id, auth=VIEWER).content == JPEG
 

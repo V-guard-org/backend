@@ -64,7 +64,7 @@ def test_idempotent_ingestion(client, pi):
     # Evento: o mesmo UUID duas vezes vira um evento só.
     event_id = str(uuid.uuid4())
     for _ in range(2):
-        r = client.put("/api/events/" + event_id, json=event_body(1002.5), headers=pi)
+        r = client.put("/api/events/" + event_id, json=event_body(1002.5, has_photo=True), headers=pi)
         assert r.status_code == 200, r.text
     assert count("events") == 1
 
@@ -85,8 +85,10 @@ def test_photo(client, pi, event_id):
     big = b"\xff\xd8" + b"\x00" * app.MAX_PHOTO_BYTES
     assert client.put(url, content=big, headers=jpeg).status_code == 413
 
-    # Antes da foto, o dashboard vê o evento sem foto.
+    # Antes da foto, o dashboard sabe que ela ainda está no cartão da Pi.
     assert client.get(url, auth=VIEWER).status_code == 404
+    detail = client.get("/api/events/" + event_id, auth=VIEWER).json()
+    assert detail["photo_pending"] and not detail["has_photo"]
     for _ in range(2):      # reenvio sobrescreve, sem erro
         assert client.put(url, content=JPEG, headers=jpeg).status_code == 200
     r = client.get(url, auth=VIEWER)
@@ -118,8 +120,8 @@ def test_dashboard(client, pi, event_id):
 
     events = client.get("/api/events", auth=VIEWER).json()
     assert [e["ts"] for e in events] == [1003.0, 1002.5]
-    assert events[1]["has_photo"]
-    assert not events[0]["has_photo"]
+    assert events[1]["has_photo"] and not events[1]["photo_pending"]
+    assert not events[0]["has_photo"] and not events[0]["photo_pending"]   # evento sem foto
     assert client.get("/api/events?limit=1", auth=VIEWER).json() == events[:1]
 
     detail = client.get("/api/events/" + event_id, auth=VIEWER).json()

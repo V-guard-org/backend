@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS events (
     received_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS events_ts ON events (ts DESC);
+-- A Pi avisa se o evento tem foto: enquanto photo for NULL, ela espera o Wi-Fi.
+ALTER TABLE events ADD COLUMN IF NOT EXISTS photo_expected BOOLEAN NOT NULL DEFAULT false;
 
 -- Chave pelo ts, não pelo id local da Pi: o SQLite da Pi reaproveita ids
 -- quando a limpeza esvazia a tabela, e o reenvio seria descartado.

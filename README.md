@@ -219,13 +219,5 @@ imprimem `OK` no fim. O `test_e2e.py` precisa do `integracao/` ao lado.
   criada pela equipe. Em muitos planos gratuitos o disco é apagado a cada
   reinício, e as fotos precisam de disco persistente.
 - **4G de verdade (T36.2):** depende do módulo SIM7670G e da Pi.
-- **Servidor lento (T34.2):** falta o teste do `Sync` quando o servidor demora
-  mais que o tempo de espera (20 s). Duplicidade, confirmação perdida e servidor
-  fora do ar já estão testados.
 - **Consulta de dispositivos (T35):** falta uma rota listando os dispositivos;
   com mais de um veículo, as consultas ganham o id dele.
-- **Saúde no dashboard (RF32):** o backend já devolve `link`, `temperature`,
-  `cellular_bytes` e `last_contact`, mas a página ainda não os mostra.
-- **Foto ainda no cartão:** os metadados do evento não dizem se ele tem foto,
-  então um evento cuja foto ainda espera o Wi-Fi aparece como "sem foto". Para
-  distinguir, o `pending_events()` do `EventManager` precisaria enviar `has_photo`.
