@@ -1,5 +1,5 @@
 # Fotos recebidas dos motoristas: nunca versionar.
-fotos/
+fotos*/
 __pycache__/
 .venv/
 .env
