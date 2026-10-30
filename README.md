@@ -100,10 +100,10 @@ O `Sync` envia a cada 60 s. No terminal do `vguard.py` aparece
 `enlace: wifi`, `enlace: cellular` ou `enlace: nenhum (os dados ficam no cartão)`;
 no do backend aparecem `PUT /api/events/...` com `200 OK`.
 
-**Fotos:** o `Sync` só envia fotos pelo Wi-Fi. Com o backend no **mesmo
-computador**, o envio conta como Wi-Fi e as fotos sobem. Na Pi, o nome da
-rede precisa estar em `AUTHORIZED_WIFI`, no `sync.py`; pelo 4G sobem só os
-dados, e as fotos esperam o Wi-Fi.
+**Fotos:** o `Sync` envia as fotos pelo mesmo enlace dos dados, Wi-Fi ou 4G,
+logo depois dos metadados do evento. O backend não distingue o enlace: aceita
+a foto de qualquer um. Cada foto pesa cerca de 50 kB e conta na franquia do 4G
+(`cellular_bytes` no `/api/health`).
 
 ### Variáveis de ambiente
 
@@ -184,7 +184,7 @@ imprimem `OK` no fim. O `test_e2e.py` precisa do `integracao/` ao lado.
   todas as rotas de consulta.
 - **`test_e2e.py`:** o `EventManager` e o `Sync` **de verdade** enviando para o
   backend numa porta local. Cobre:
-  - 4G sem fotos e, depois, Wi-Fi com fotos, que chegam idênticas às da Pi (RF20, RF21);
+  - 4G com telemetria, metadados e fotos, que chegam idênticas às da Pi, e foto que falha atrasando só a si mesma (RF20, RF21);
   - confirmação perdida e reenvio sem duplicar (RF22, RNF26);
   - servidor fora do ar sem perder nada, e o pendente subindo quando ele volta (RF23);
   - janela de ±10 s e saúde do dispositivo chegando ao dashboard, já com a
