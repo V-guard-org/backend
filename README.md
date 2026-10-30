@@ -1,11 +1,11 @@
 # V-GUARD — Backend
 
-API em FastAPI + PostgreSQL (T33 a T35). Recebe o que a Raspberry Pi envia
+API em FastAPI + SQLite (T33 a T35). Recebe o que a Raspberry Pi envia
 e serve o dashboard:
 
 ```
 Raspberry Pi                          backend                          navegador
-EventManager ─► Sync ──PUT/POST /api/*──► app.py ──► PostgreSQL
+EventManager ─► Sync ──PUT/POST /api/*──► app.py ──► vguard.db (SQLite)
                                              │   └─► fotos/<id>.jpg
                                              └──GET /api/* + index.html──► dashboard
 ```
@@ -22,6 +22,8 @@ A documentação OpenAPI é gerada sozinha em <http://localhost:8000/docs>.
 | Arquivo            | O que é                                                              |
 |--------------------|----------------------------------------------------------------------|
 | `app.py`           | A API inteira e o cadastro de dispositivos (`python3 app.py novo-dispositivo`) |
+| `database.py`     | Conexões, transações, WAL e chaves estrangeiras SQLite               |
+| `migrate_postgres.py` | Importação opcional de dados existentes; veja [MIGRATION.md](MIGRATION.md) |
 | `schema.sql`       | As 4 tabelas, aplicadas sozinhas quando o servidor sobe             |
 | `test_app.py`      | Testes das rotas                                                     |
 | `test_e2e.py`      | `EventManager` e `Sync` de verdade enviando para o backend          |
@@ -29,25 +31,24 @@ A documentação OpenAPI é gerada sozinha em <http://localhost:8000/docs>.
 
 ## Instalar
 
-PostgreSQL (uma vez, precisa de `sudo`):
+Python 3.10+ com `sqlite3` e SQLite com suporte a JSON (`json_valid`).
+Não é necessário instalar um servidor de banco. Recomendamos o Python 3.11
+com SQLite atualizado pelo sistema/distribuição.
 
 ```bash
-sudo apt install postgresql
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python3 - <<'PYSQL'
+import sqlite3
+print(sqlite3.sqlite_version)
+print(sqlite3.connect(":memory:").execute("SELECT json_valid('{}')").fetchone())
+PYSQL
 ```
 
-```bash
-sudo -u postgres createuser -s $USER
-```
-
-```bash
-createdb vguard && createdb vguard_test
-```
-
-Dependências Python:
-
-```bash
-pip install --user -r requirements.txt
-```
+O banco é criado automaticamente ao iniciar a API ou cadastrar um dispositivo.
+Para trazer dados do backend PostgreSQL anterior, siga [MIGRATION.md](MIGRATION.md)
+**antes de iniciar a API com o arquivo de destino**.
 
 ## Executar
 
@@ -63,7 +64,7 @@ v-guard/
 ### 1. Subir o backend
 
 ```bash
-DASHBOARD_PASSWORD=escolha-uma-senha uvicorn app:app --host 0.0.0.0
+DASHBOARD_PASSWORD=escolha-uma-senha uvicorn app:app --host 0.0.0.0 --workers 1
 ```
 
 Abra <http://localhost:8000> e entre com o usuário `vguard` e a senha
@@ -109,11 +110,35 @@ dados, e as fotos esperam o Wi-Fi.
 
 | Variável             | Padrão            | Uso                                                |
 |----------------------|-------------------|----------------------------------------------------|
-| `DATABASE_URL`       | `dbname=vguard`   | Conexão do PostgreSQL (formato libpq)              |
+| `DATABASE_PATH`      | `vguard.db` na pasta do backend | Caminho do arquivo SQLite; relativo à pasta do backend |
 | `PHOTOS_DIR`         | `./fotos`         | Onde as fotos recebidas ficam (fora do git)        |
 | `DASHBOARD_DIR`      | `../dashboard`    | Pasta do `index.html`                              |
 | `DASHBOARD_USER`     | `vguard`          | Usuário do dashboard                               |
 | `DASHBOARD_PASSWORD` | vazio             | Senha do dashboard. **Sem ela, o dashboard não abre** |
+
+O cadastro e o servidor devem usar o mesmo `DATABASE_PATH`. `:memory:` e URLs
+não são aceitos, pois cada transação abre sua própria conexão. A antiga
+`DATABASE_URL` deixa de ser usada; se ela estiver definida sem `DATABASE_PATH`,
+o backend interrompe a inicialização com uma mensagem de migração.
+
+Há um exemplo em `.env.example`: copie para `.env`, escolha a senha e use
+`uvicorn app:app --env-file .env --host 0.0.0.0 --workers 1`.
+O `python3 app.py novo-dispositivo` não carrega `.env` automaticamente:
+exporte as mesmas variáveis no terminal ao cadastrar.
+
+### Demonstração isolada
+
+No backend, os comandos abaixo substituem `createdb vguard_demo` e
+`DATABASE_URL=dbname=vguard_demo` do README antigo do dashboard:
+
+```bash
+export DATABASE_PATH=./vguard_demo.db PHOTOS_DIR=./fotos_demo
+python3 app.py novo-dispositivo demo
+DASHBOARD_PASSWORD=demo uvicorn app:app --port 8001 --workers 1
+```
+
+Depois, use `demo_data.py` do dashboard com o token exibido e
+`VGUARD_BACKEND=http://localhost:8001/api`.
 
 ### Se der problema
 
@@ -161,8 +186,8 @@ Os formatos estão no README do dashboard.
 | Tabela      | Chave                | O que guarda                                         |
 |-------------|----------------------|------------------------------------------------------|
 | `devices`   | id do dispositivo    | Hash do token                                        |
-| `events`    | UUID gerado na Pi    | Tipo, horário, score, sensores e janela (JSONB), nome da foto |
-| `telemetry` | (dispositivo, `ts`)  | Uma linha por segundo, em JSONB                      |
+| `events`    | UUID gerado na Pi    | Tipo, horário, score, sensores e janela (JSON texto), nome da foto |
+| `telemetry` | (dispositivo, `ts`)  | Uma linha por segundo, em JSON texto                      |
 | `health`    | id do dispositivo    | A última saúde recebida e quando chegou              |
 
 ## Testes
@@ -175,8 +200,19 @@ python3 test_app.py
 python3 test_e2e.py
 ```
 
-Os dois usam o banco `vguard_test`, que é apagado a cada execução, e
-imprimem `OK` no fim. O `test_e2e.py` precisa do `integracao/` ao lado.
+Os testes criam bancos e fotos temporários próprios, mesmo se o shell tiver
+`DATABASE_PATH` definido, e imprimem `OK` no fim. `test_app.py` usa um HTML de
+teste; o `test_e2e.py` precisa de `integracao/` ao lado (ou `VGUARD_EVENTS`
+apontando para `integracao/events`).
+
+```bash
+python3 test_sqlite.py
+```
+
+`test_sqlite.py` cobre persistência após reinicialização, JSON e booleanos,
+chaves estrangeiras, rollback, lotes concorrentes sem duplicação, banco ocupado
+(503 e reenvio) e banco removido durante a execução. Para testar a importação
+com um PostgreSQL real e descartável, veja [MIGRATION.md](MIGRATION.md).
 
 - **`test_app.py`:** autenticação do dispositivo e do dashboard; envio repetido
   sem duplicar; id local reaproveitado pela Pi; tipos de evento novos aceitos;
@@ -213,11 +249,58 @@ imprimem `OK` no fim. O `test_e2e.py` precisa do `integracao/` ao lado.
   `DASHBOARD_PASSWORD`, o dashboard não abre.
 - **Um dispositivo:** as consultas ainda não filtram por dispositivo.
 
+## Armazenamento, publicação e backup
+
+- Use um disco **persistente e local ao backend**, tanto para `DATABASE_PATH`
+  quanto para `PHOTOS_DIR`. O SQLite do backend é independente do banco da Pi.
+- WAL permite leituras durante uma gravação, mas há apenas um gravador por vez.
+  As transações são curtas, cada uma tem sua conexão e espera até 5 s por um
+  bloqueio. Se falhar, a API responde 503 e a Pi mantém o dado na fila.
+- Chaves estrangeiras ficam ligadas em toda conexão e `synchronous=FULL`
+  preserva a durabilidade das transações confirmadas. Há índice por `ts` para
+  as consultas de telemetria do dashboard.
+- Comece com **um worker**. Não compartilhe o arquivo por NFS ou entre réplicas
+  em máquinas diferentes. Uma frota maior exige medir a carga de escrita.
+- Em WAL, os arquivos `vguard.db-wal` e `vguard.db-shm` podem existir. Não os
+  apague nem copie apenas o `.db` enquanto a aplicação estiver escrevendo.
+- Para um backup consistente do banco **e das fotos**, pare o backend, faça o
+  backup pela API SQLite abaixo e copie a pasta `PHOTOS_DIR`. Preserve também
+  a configuração necessária para restaurar o serviço.
+
+```bash
+python3 - <<'PYBACKUP'
+import os
+from pathlib import Path
+import sqlite3
+import database
+
+path = database.resolve_path(os.environ.get("DATABASE_PATH", "vguard.db"))
+backup = Path("vguard-backup.db")
+# Recusa sobrescrever um backup anterior.
+with backup.open("xb"):
+    pass
+with database.connection(path) as source:
+    target = sqlite3.connect(backup)
+    try:
+        source.backup(target)
+    finally:
+        target.close()
+PYBACKUP
+```
+
+A API de backup também funciona com o banco ativo; parar o backend permite
+copiar as fotos do mesmo estado. Para restaurar, pare o serviço e use o backup
+em um **novo caminho**, sem journals antigos, junto da pasta de fotos salva.
+
+Referências: [WAL](https://www.sqlite.org/wal.html),
+[concorrência e implantação](https://www.sqlite.org/whentouse.html),
+[backup no Python](https://docs.python.org/3/library/sqlite3.html#sqlite3.Connection.backup).
+
 ## Pendências
 
-- **Publicação (T36.1):** precisa de conta num serviço com PostgreSQL e HTTPS,
-  criada pela equipe. Em muitos planos gratuitos o disco é apagado a cada
-  reinício, e as fotos precisam de disco persistente.
+- **Publicação (T36.1):** precisa de um serviço com HTTPS e disco persistente
+  para o SQLite e as fotos. Em muitos planos gratuitos o disco é apagado a
+  cada reinício.
 - **4G de verdade (T36.2):** depende do módulo SIM7670G e da Pi.
 - **Consulta de dispositivos (T35):** falta uma rota listando os dispositivos;
   com mais de um veículo, as consultas ganham o id dele.

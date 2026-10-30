@@ -14,10 +14,11 @@ import sys
 import tempfile
 import threading
 import time
-import uuid
 
-os.environ.setdefault("DATABASE_URL", "dbname=vguard_test")
-os.environ["PHOTOS_DIR"] = tempfile.mkdtemp()
+# Sempre isolado, mesmo que o shell aponte para o banco de produção.
+TEST_DIR = tempfile.TemporaryDirectory(prefix="vguard-test-")
+os.environ["DATABASE_PATH"] = os.path.join(TEST_DIR.name, "backend.db")
+os.environ["PHOTOS_DIR"] = os.path.join(TEST_DIR.name, "fotos")
 os.environ["DASHBOARD_PASSWORD"] = "senha-de-teste"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -43,7 +44,11 @@ def start_server():
     server = uvicorn.Server(uvicorn.Config(app.app, host="127.0.0.1", port=port, log_level="warning"))
     server.thread = threading.Thread(target=server.run, daemon=True)
     server.thread.start()
+    deadline = time.monotonic() + 10
     while not server.started:
+        if not server.thread.is_alive() or time.monotonic() >= deadline:
+            server.should_exit = True
+            raise RuntimeError("backend não iniciou em 10 s")
         time.sleep(0.05)
     sync.BACKEND_URL = "http://127.0.0.1:%d/api" % port
     return server, "http://127.0.0.1:%d" % port
@@ -76,11 +81,12 @@ def counts(base):
 def main():
     server, base = start_server()
     with app.db() as cur:
-        cur.execute("TRUNCATE health, telemetry, events, devices")
+        for table in ("health", "telemetry", "events", "devices"):
+            cur.execute("DELETE FROM " + table)
     sync.DEVICE_ID = "vguard-01"
     sync.DEVICE_TOKEN = app.new_device("vguard-01")
 
-    manager = EventManager(tempfile.mkdtemp())
+    manager = EventManager(os.path.join(TEST_DIR.name, "pi"))
     start = time.time() - 120
     # Os eventos só entram na fila quando a janela de ±10 s fecha.
     drive(manager, start, 40, [(5, "fadiga"), (20, "distracao")])

@@ -1,5 +1,5 @@
 """
-V-GUARD — Backend (FastAPI + PostgreSQL).
+V-GUARD — Backend (FastAPI + SQLite).
 
 Recebe o que o Sync da Raspberry Pi envia e serve o dashboard:
 
@@ -20,24 +20,27 @@ Documentação OpenAPI em /docs.
 import contextlib
 import hashlib
 import hmac
+import json
 import os
 import secrets
+import sqlite3
 import sys
 import time
 import uuid
 from typing import Optional
 
-import psycopg2
-import psycopg2.extras
-import psycopg2.pool
-from fastapi import Body, Depends, FastAPI, Header, HTTPException
+import database
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "dbname=vguard")
+# Não abrir um banco vazio por engano ao reutilizar a configuração antiga.
+if os.environ.get("DATABASE_URL") and not os.environ.get("DATABASE_PATH"):
+    raise RuntimeError("DATABASE_URL foi substituída por DATABASE_PATH; veja MIGRATION.md")
+DATABASE_PATH = database.resolve_path(os.environ.get("DATABASE_PATH", "vguard.db"))
 PHOTOS_DIR = os.environ.get("PHOTOS_DIR", os.path.join(HERE, "fotos"))
 DASHBOARD_DIR = os.environ.get("DASHBOARD_DIR", os.path.join(HERE, "..", "dashboard"))
 # Sem senha definida, o dashboard fica fechado: o servidor expõe fotos de motoristas.
@@ -54,25 +57,15 @@ TELEMETRY_LIMIT = 10000
 # BANCO
 # ============================================================
 
-pool = None
-
-
 def connect():
-    global pool
-    pool = psycopg2.pool.ThreadedConnectionPool(1, 10, DATABASE_URL)
-    with db() as cur, open(os.path.join(HERE, "schema.sql")) as f:
-        cur.execute(f.read())
+    database.initialize(DATABASE_PATH)
 
 
 @contextlib.contextmanager
 def db():
-    """Cursor numa transação: commit ao sair, rollback se der erro."""
-    conn = pool.getconn()
-    try:
-        with conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            yield cur
-    finally:
-        pool.putconn(conn)
+    """Uma conexão por transação, criada e fechada na mesma thread."""
+    with database.transaction(DATABASE_PATH) as conn:
+        yield conn.cursor()
 
 
 def hash_token(token):
@@ -85,7 +78,7 @@ def new_device(device_id):
     token = secrets.token_urlsafe(32)
     with db() as cur:
         cur.execute(
-            "INSERT INTO devices (id, token_hash) VALUES (%s, %s)"
+            "INSERT INTO devices (id, token_hash) VALUES (?, ?)"
             " ON CONFLICT (id) DO UPDATE SET token_hash = EXCLUDED.token_hash",
             (device_id, hash_token(token))
         )
@@ -96,13 +89,12 @@ def new_device(device_id):
 async def lifespan(app):
     connect()
     yield
-    pool.closeall()
 
 
 app = FastAPI(title="V-GUARD", lifespan=lifespan)
 
 
-@app.exception_handler(psycopg2.Error)
+@app.exception_handler(sqlite3.Error)
 def database_down(request, error):
     # 503 = o Sync tenta de novo mais tarde; nada sai da fila da Pi.
     return JSONResponse({"detail": "banco indisponível"}, status_code=503)
@@ -115,7 +107,7 @@ def database_down(request, error):
 def device(authorization: str = Header(""), x_device_id: str = Header("")):
     """Dispositivo dono do token. 401 faz o Sync tentar de novo, sem perder nada."""
     with db() as cur:
-        cur.execute("SELECT token_hash FROM devices WHERE id = %s", (x_device_id,))
+        cur.execute("SELECT token_hash FROM devices WHERE id = ?", (x_device_id,))
         row = cur.fetchone()
 
     token = authorization.removeprefix("Bearer ")
@@ -166,9 +158,9 @@ class Event(BaseModel):
 def receive_health(data: dict = Body(...), device_id: str = Depends(device)):
     with db() as cur:
         cur.execute(
-            "INSERT INTO health VALUES (%s, %s, %s) ON CONFLICT (device_id)"
+            "INSERT INTO health VALUES (?, ?, ?) ON CONFLICT (device_id)"
             " DO UPDATE SET received_at = EXCLUDED.received_at, data = EXCLUDED.data",
-            (device_id, time.time(), psycopg2.extras.Json(data))
+            (device_id, time.time(), json.dumps(data))
         )
     return {"ok": True}
 
@@ -177,10 +169,10 @@ def receive_health(data: dict = Body(...), device_id: str = Depends(device)):
 def receive_telemetry(batch: TelemetryBatch, device_id: str = Depends(device)):
     # Reenvio de um lote já gravado (confirmação perdida) não duplica nada.
     with db() as cur:
-        psycopg2.extras.execute_values(
-            cur,
-            "INSERT INTO telemetry (device_id, ts, data) VALUES %s ON CONFLICT DO NOTHING",
-            [(device_id, row.ts, psycopg2.extras.Json(row.data)) for row in batch.items]
+        cur.executemany(
+            "INSERT INTO telemetry (device_id, ts, data) VALUES (?, ?, ?)"
+            " ON CONFLICT (device_id, ts) DO NOTHING",
+            [(device_id, row.ts, json.dumps(row.data)) for row in batch.items]
         )
     return {"ok": True, "items": len(batch.items)}
 
@@ -190,9 +182,9 @@ def receive_event(event_id: uuid.UUID, event: Event, device_id: str = Depends(de
     with db() as cur:
         cur.execute(
             "INSERT INTO events (id, device_id, type, ts, score, data, event_window, photo_expected)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING",
             (str(event_id), device_id, event.type, event.ts, event.score,
-             psycopg2.extras.Json(event.data), psycopg2.extras.Json(event.window),
+             json.dumps(event.data), json.dumps(event.window),
              event.has_photo)
         )
     return {"ok": True}
@@ -211,7 +203,7 @@ def receive_photo(
 
     with db() as cur:
         cur.execute(
-            "SELECT 1 FROM events WHERE id = %s AND device_id = %s",
+            "SELECT 1 FROM events WHERE id = ? AND device_id = ?",
             (str(event_id), device_id)
         )
         if not cur.fetchone():
@@ -230,7 +222,7 @@ def receive_photo(
     os.replace(tmp, os.path.join(PHOTOS_DIR, name))
 
     with db() as cur:
-        cur.execute("UPDATE events SET photo = %s WHERE id = %s", (name, str(event_id)))
+        cur.execute("UPDATE events SET photo = ? WHERE id = ?", (name, str(event_id)))
     return {"ok": True}
 
 
@@ -247,10 +239,10 @@ def event_json(row):
         "type": row["type"],
         "ts": row["ts"],
         "score": row["score"],
-        "data": row["data"],
+        "data": json.loads(row["data"]),
         "has_photo": row["photo"] is not None,
         # foto tirada, mas ainda no cartão da Pi esperando o Wi-Fi
-        "photo_pending": row["photo_expected"] and row["photo"] is None,
+        "photo_pending": bool(row["photo_expected"]) and row["photo"] is None,
     }
 
 
@@ -265,7 +257,7 @@ def health():
         )
         last = cur.fetchone()
 
-    h = row["data"] if row else {}
+    h = json.loads(row["data"]) if row else {}
     return {
         "ts": time.time(),
         "pending": h.get("pending"),        # o que ainda está no cartão da Pi
@@ -280,26 +272,26 @@ def health():
 
 
 @app.get("/api/events", dependencies=[Depends(viewer)])
-def events(limit: int = 200):
+def events(limit: int = Query(200, ge=0)):
     with db() as cur:
-        cur.execute("SELECT * FROM events ORDER BY ts DESC LIMIT %s", (limit,))
+        cur.execute("SELECT * FROM events ORDER BY ts DESC LIMIT ?", (limit,))
         return [event_json(r) for r in cur.fetchall()]
 
 
 @app.get("/api/events/{event_id}", dependencies=[Depends(viewer)])
 def event(event_id: uuid.UUID):
     with db() as cur:
-        cur.execute("SELECT * FROM events WHERE id = %s", (str(event_id),))
+        cur.execute("SELECT * FROM events WHERE id = ?", (str(event_id),))
         row = cur.fetchone()
     if not row:
         raise HTTPException(404, "evento inexistente")
-    return {**event_json(row), "window": row["event_window"]}
+    return {**event_json(row), "window": json.loads(row["event_window"])}
 
 
 @app.get("/api/events/{event_id}/photo", dependencies=[Depends(viewer)])
 def photo(event_id: uuid.UUID):
     with db() as cur:
-        cur.execute("SELECT photo FROM events WHERE id = %s", (str(event_id),))
+        cur.execute("SELECT photo FROM events WHERE id = ?", (str(event_id),))
         row = cur.fetchone()
     # O nome do arquivo vem do banco, nunca da URL.
     path = row and row["photo"] and os.path.join(PHOTOS_DIR, row["photo"])
@@ -312,10 +304,11 @@ def photo(event_id: uuid.UUID):
 def telemetry():
     with db() as cur:
         cur.execute(
-            "SELECT ts, data FROM telemetry ORDER BY ts DESC LIMIT %s",
+            "SELECT ts, data FROM telemetry ORDER BY ts DESC LIMIT ?",
             (TELEMETRY_LIMIT,)
         )
-        return list(reversed(cur.fetchall()))
+        return [{"ts": r["ts"], "data": json.loads(r["data"])}
+                for r in reversed(cur.fetchall())]
 
 
 @app.get("/", dependencies=[Depends(viewer)])

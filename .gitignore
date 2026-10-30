@@ -3,3 +3,12 @@ fotos*/
 __pycache__/
 .venv/
 .env
+
+# Banco local, journals e backups (podem conter dados dos motoristas).
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.dump

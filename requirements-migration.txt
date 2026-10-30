@@ -1,0 +1,2 @@
+# Somente para importar um PostgreSQL existente; a API usa sqlite3 da biblioteca padrão.
+psycopg[binary]>=3.1,<4

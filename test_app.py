@@ -1,18 +1,23 @@
 """
-Testa as rotas do backend contra um PostgreSQL de verdade, no banco
-vguard_test (apagado e recriado a cada execução).
+Testa as rotas contra um SQLite temporário, isolado de qualquer banco existente.
 
-    createdb vguard_test      # uma vez
     python3 test_app.py
 """
 
 import os
+from pathlib import Path
 import tempfile
 import uuid
 
-os.environ.setdefault("DATABASE_URL", "dbname=vguard_test")
-os.environ["PHOTOS_DIR"] = tempfile.mkdtemp()
+# Sempre isolado, mesmo que o shell aponte para o banco de produção.
+TEST_DIR = tempfile.TemporaryDirectory(prefix="vguard-test-")
+os.environ["DATABASE_PATH"] = os.path.join(TEST_DIR.name, "backend.db")
+os.environ["PHOTOS_DIR"] = os.path.join(TEST_DIR.name, "fotos")
 os.environ["DASHBOARD_PASSWORD"] = "senha-de-teste"
+
+# O teste de servir HTML é independente do checkout do dashboard.
+os.environ["DASHBOARD_DIR"] = TEST_DIR.name
+Path(TEST_DIR.name, "index.html").write_text("<html>V-GUARD</html>", encoding="utf-8")
 
 from fastapi.testclient import TestClient
 
@@ -24,7 +29,8 @@ VIEWER = ("vguard", "senha-de-teste")
 
 def reset():
     with app.db() as cur:
-        cur.execute("TRUNCATE health, telemetry, events, devices")
+        for table in ("health", "telemetry", "events", "devices"):
+            cur.execute("DELETE FROM " + table)
     return {"X-Device-Id": "vguard-01", "Authorization": "Bearer " + app.new_device("vguard-01")}
 
 
