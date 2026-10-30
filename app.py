@@ -241,7 +241,7 @@ def event_json(row):
         "score": row["score"],
         "data": json.loads(row["data"]),
         "has_photo": row["photo"] is not None,
-        # foto tirada, mas ainda no cartão da Pi esperando o Wi-Fi
+        # foto tirada, mas ainda no cartão da Pi esperando o envio
         "photo_pending": bool(row["photo_expected"]) and row["photo"] is None,
     }
 
