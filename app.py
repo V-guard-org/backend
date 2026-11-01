@@ -4,9 +4,9 @@ V-GUARD — Backend (FastAPI + PostgreSQL).
 Recebe o que o Sync da Raspberry Pi envia e serve o dashboard:
 
     Raspberry Pi (Sync)              Dashboard (navegador)
-    POST /api/health                 GET /api/health
-    POST /api/telemetry              GET /api/telemetry
-    PUT  /api/events/{id}            GET /api/events, /api/events/{id}
+    POST /api/health                 GET /api/devices  (frota)
+    POST /api/telemetry              GET /api/health, /api/telemetry  (?device=<id>)
+    PUT  /api/events/{id}            GET /api/events (?device=<id>), /api/events/{id}
     PUT  /api/events/{id}/photo      GET /api/events/{id}/photo
                                      GET /  (index.html do dashboard)
 
@@ -15,6 +15,7 @@ Documentação OpenAPI em /docs.
 
     uvicorn app:app                              # servidor
     python3 app.py novo-dispositivo vguard-01    # gera o token de um dispositivo
+    python3 app.py carro vguard-01 Voyage ABC1D23 Branco   # placa do carro, para a frota
 """
 
 import contextlib
@@ -238,8 +239,13 @@ def receive_photo(
 # CONSULTA (dashboard) — rotas descritas no README do dashboard
 # ============================================================
 
-# ponytail: um dispositivo só; com a frota, as rotas ganham ?device= ou
-# /api/devices/<id>/... e as consultas filtram por device_id.
+# ?device=<id> filtra por dispositivo; sem ele, valem todos (como antes da frota).
+DEVICE_FILTER = "(%(device)s IS NULL OR device_id = %(device)s)"
+
+# O carro de teste da equipe: dispositivo real sem carro gravado aparece como ele.
+# O `python3 app.py carro ...` grava a placa (ou outro carro) por cima.
+REAL_CAR = {"model": "Voyage", "color": "Branco", "plate": None}
+
 
 def event_json(row):
     return {
@@ -254,14 +260,42 @@ def event_json(row):
     }
 
 
-@app.get("/api/health", dependencies=[Depends(viewer)])
-def health():
+@app.get("/api/devices", dependencies=[Depends(viewer)])
+def devices():
+    """Resumo de cada carro para a tela da frota: carro, contato, posição e alertas."""
     with db() as cur:
-        cur.execute("SELECT received_at, data FROM health ORDER BY received_at DESC LIMIT 1")
+        cur.execute(
+            "SELECT d.id, d.model, d.plate, d.color, d.simulated,"
+            " h.received_at AS last_contact, t.ts AS telemetry_ts, t.data AS telemetry,"
+            " (SELECT COUNT(*) FROM events e WHERE e.device_id = d.id AND e.ts > %s) AS events_24h"
+            " FROM devices d LEFT JOIN health h ON h.device_id = d.id"
+            # Só a última linha: GPS sem fix nela = posição atual desconhecida.
+            " LEFT JOIN LATERAL (SELECT ts, data FROM telemetry WHERE device_id = d.id"
+            "  ORDER BY ts DESC LIMIT 1) t ON true"
+            " ORDER BY d.simulated, d.id",
+            (time.time() - 86400,)
+        )
+        rows = cur.fetchall()
+
+    for r in rows:
+        data = r.pop("telemetry") or {}
+        gps, obd = data.get("gps") or {}, data.get("obd") or {}
+        r.update(lat=gps.get("lat"), lon=gps.get("lon"), speed=gps.get("speed", obd.get("speed")))
+        if not r["simulated"]:
+            r.update({k: r[k] or v for k, v in REAL_CAR.items()})
+    return rows
+
+
+@app.get("/api/health", dependencies=[Depends(viewer)])
+def health(device: Optional[str] = None):
+    q = {"device": device}
+    with db() as cur:
+        cur.execute("SELECT received_at, data FROM health WHERE " + DEVICE_FILTER +
+                    " ORDER BY received_at DESC LIMIT 1", q)
         row = cur.fetchone()
         cur.execute(
-            "SELECT (SELECT MAX(ts) FROM events) AS event,"
-            " (SELECT MAX(ts) FROM telemetry) AS telemetry"
+            "SELECT (SELECT MAX(ts) FROM events WHERE " + DEVICE_FILTER + ") AS event,"
+            " (SELECT MAX(ts) FROM telemetry WHERE " + DEVICE_FILTER + ") AS telemetry", q
         )
         last = cur.fetchone()
 
@@ -280,9 +314,10 @@ def health():
 
 
 @app.get("/api/events", dependencies=[Depends(viewer)])
-def events(limit: int = 200):
+def events(limit: int = 200, device: Optional[str] = None):
     with db() as cur:
-        cur.execute("SELECT * FROM events ORDER BY ts DESC LIMIT %s", (limit,))
+        cur.execute("SELECT * FROM events WHERE " + DEVICE_FILTER +
+                    " ORDER BY ts DESC LIMIT %(limit)s", {"device": device, "limit": limit})
         return [event_json(r) for r in cur.fetchall()]
 
 
@@ -309,11 +344,12 @@ def photo(event_id: uuid.UUID):
 
 
 @app.get("/api/telemetry", dependencies=[Depends(viewer)])
-def telemetry():
+def telemetry(device: Optional[str] = None):
     with db() as cur:
         cur.execute(
-            "SELECT ts, data FROM telemetry ORDER BY ts DESC LIMIT %s",
-            (TELEMETRY_LIMIT,)
+            "SELECT ts, data FROM telemetry WHERE " + DEVICE_FILTER +
+            " ORDER BY ts DESC LIMIT %(limit)s",
+            {"device": device, "limit": TELEMETRY_LIMIT}
         )
         return list(reversed(cur.fetchall()))
 
@@ -327,8 +363,17 @@ def dashboard():
 # ============================================================
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["carro"] and len(sys.argv) == 6:
+        connect()
+        with db() as cur:
+            cur.execute("UPDATE devices SET model = %s, plate = %s, color = %s WHERE id = %s",
+                        (*sys.argv[3:6], sys.argv[2]))
+            if not cur.rowcount:
+                sys.exit("dispositivo %s não cadastrado" % sys.argv[2])
+        sys.exit("Carro do %s: %s %s, placa %s." % (sys.argv[2], sys.argv[3], sys.argv[5], sys.argv[4]))
     if sys.argv[1:2] != ["novo-dispositivo"] or len(sys.argv) != 3:
-        sys.exit("uso: python3 app.py novo-dispositivo <id>")
+        sys.exit("uso: python3 app.py novo-dispositivo <id>\n"
+                 "     python3 app.py carro <id> <modelo> <placa> <cor>")
     connect()
     token = new_device(sys.argv[2])
     print("Dispositivo %s cadastrado. Na Raspberry Pi:\n" % sys.argv[2])

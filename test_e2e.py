@@ -2,7 +2,7 @@
 Ponta a ponta: EventManager e Sync de verdade (../integracao/events)
 enviando para o backend numa porta local, como a Raspberry Pi fará.
 
-Cobre a política de enlace (4G sem fotos, Wi-Fi com fotos), a confirmação
+Cobre o envio de tudo, fotos inclusive, pelo 4G e pelo Wi-Fi, a confirmação
 perdida (reenvio sem duplicar) e o servidor fora do ar (nada sai da fila).
 
     python3 test_e2e.py

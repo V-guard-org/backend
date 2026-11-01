@@ -8,6 +8,7 @@ vguard_test (apagado e recriado a cada execução).
 
 import os
 import tempfile
+import time
 import uuid
 
 os.environ.setdefault("DATABASE_URL", "dbname=vguard_test")
@@ -133,6 +134,39 @@ def test_dashboard(client, pi, event_id):
     assert len(telemetry) == 6
 
 
+def test_fleet(client):
+    # Segundo carro, com GPS e um evento recente; o vguard-01 segue sem GPS.
+    other = {"X-Device-Id": "vguard-02", "Authorization": "Bearer " + app.new_device("vguard-02")}
+    with app.db() as cur:
+        cur.execute("UPDATE devices SET model = 'Onix', plate = 'ABC1D23', color = 'Prata'"
+                    " WHERE id = 'vguard-02'")
+    now = time.time()
+    gps = {"gps": {"ts": now, "lat": -25.44, "lon": -49.27, "speed": 42.0}}
+    assert client.post("/api/telemetry", json={"items": [{"ts": now, "data": gps}]}, headers=other).status_code == 200
+    recent = str(uuid.uuid4())
+    assert client.put("/api/events/" + recent, json=event_body(now), headers=other).status_code == 200
+
+    assert client.get("/api/devices").status_code == 401
+    fleet = {d["id"]: d for d in client.get("/api/devices", auth=VIEWER).json()}
+    assert fleet["vguard-02"]["model"] == "Onix" and fleet["vguard-02"]["plate"] == "ABC1D23"
+    assert (fleet["vguard-02"]["lat"], fleet["vguard-02"]["speed"]) == (-25.44, 42.0)
+    assert fleet["vguard-02"]["events_24h"] == 1 and fleet["vguard-02"]["last_contact"] is None
+    assert fleet["vguard-01"]["lat"] is None and fleet["vguard-01"]["events_24h"] == 0
+    assert not fleet["vguard-01"]["simulated"]
+    # Real e sem carro gravado: é o carro de teste da equipe.
+    assert (fleet["vguard-01"]["model"], fleet["vguard-01"]["color"]) == ("Voyage", "Branco")
+
+    # ?device= separa os carros; sem ele, valem todos.
+    one = lambda path: client.get(path, auth=VIEWER).json()
+    assert [e["id"] for e in one("/api/events?device=vguard-02")] == [recent]
+    assert len(one("/api/events")) == 3
+    assert [r["ts"] for r in one("/api/telemetry?device=vguard-02")] == [now]
+    assert len(one("/api/telemetry?device=vguard-01")) == 6
+    assert one("/api/health?device=vguard-02")["last_contact"] is None
+    assert one("/api/health?device=vguard-01")["link"] == "wifi"
+    assert one("/api/health?device=inexistente")["last_event"] is None
+
+
 if __name__ == "__main__":
     with TestClient(app.app) as client:
         pi = reset()
@@ -140,4 +174,5 @@ if __name__ == "__main__":
         event_id = test_idempotent_ingestion(client, pi)
         test_photo(client, pi, event_id)
         test_dashboard(client, pi, event_id)
+        test_fleet(client)
     print("OK")

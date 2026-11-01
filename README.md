@@ -23,6 +23,7 @@ A documentação OpenAPI é gerada sozinha em <http://localhost:8000/docs>.
 |--------------------|----------------------------------------------------------------------|
 | `app.py`           | A API inteira e o cadastro de dispositivos (`python3 app.py novo-dispositivo`) |
 | `schema.sql`       | As 4 tabelas, aplicadas sozinhas quando o servidor sobe             |
+| `frota_demo.py`    | Carros simulados circulando por Curitiba, para a tela da frota      |
 | `test_app.py`      | Testes das rotas                                                     |
 | `test_e2e.py`      | `EventManager` e `Sync` de verdade enviando para o backend          |
 | `requirements.txt` | Dependências Python                                                  |
@@ -86,6 +87,14 @@ Ele mostra duas linhas `export VGUARD_DEVICE=...` e `export VGUARD_TOKEN=...`.
 dele. Perdeu? Rode o comando de novo: ele gera um token novo e o antigo deixa
 de valer.
 
+Na tela da frota, todo dispositivo real aparece como o carro de teste da
+equipe, um Voyage branco (`REAL_CAR` no `app.py`). Para mostrar a placa no
+lugar do id, ou outro carro, grave por cima:
+
+```bash
+python3 app.py carro vguard-01 Voyage ABC1D23 Branco
+```
+
 ### 3. Ligar a Raspberry Pi (ou o notebook) ao backend
 
 No terminal onde o `vguard.py` vai rodar, cole as duas linhas `export` e depois:
@@ -104,6 +113,27 @@ no do backend aparecem `PUT /api/events/...` com `200 OK`.
 logo depois dos metadados do evento. O backend não distingue o enlace: aceita
 a foto de qualquer um. Cada foto pesa cerca de 50 kB e conta na franquia do 4G
 (`cellular_bytes` no `/api/health`).
+
+### 4. Frota simulada (opcional)
+
+No servidor, com o mesmo `DATABASE_URL` do backend:
+
+```bash
+python3 frota_demo.py
+```
+
+Cria 6 carros **simulados** (`sim-01` a `sim-06`): 4 circulando por Curitiba,
+1 parado e 1 sem contato há 2 h, com GPS, OBD-II, IMU, saúde e eventos sem foto.
+Eles só andam enquanto o comando estiver rodando (deixe num `tmux` ou `nohup`).
+Se parar e voltar, o trajeto continua sem salto. O carro de verdade não é tocado.
+No dashboard, eles aparecem com o selo "simulado".
+
+O banco não cresce sem limite: a telemetria simulada dura 3 h e os eventos, 24 h.
+Para apagar tudo deles:
+
+```bash
+python3 frota_demo.py --apagar
+```
 
 ### Variáveis de ambiente
 
@@ -148,19 +178,21 @@ Exigem login (HTTP Basic). Rotas descritas no README do dashboard:
 | Rota | O que devolve |
 |---|---|
 | `GET /` | O `index.html` do dashboard, sem cache |
+| `GET /api/devices` | Cada carro: modelo, placa, cor, último contato, última posição e alertas em 24 h |
 | `GET /api/health` | Última saúde recebida, com `last_contact` no horário do servidor |
 | `GET /api/events?limit=200` | Eventos, do mais novo para o mais antigo |
 | `GET /api/events/{id}` | Um evento, com a janela de ±10 s |
 | `GET /api/events/{id}/photo` | A foto, ou 404 se ainda não chegou |
 | `GET /api/telemetry` | As 10 000 linhas de telemetria mais recentes, em ordem de tempo |
 
-Os formatos estão no README do dashboard.
+`/api/health`, `/api/events` e `/api/telemetry` aceitam `?device=<id>` para
+um carro só; sem ele, valem todos. Os formatos estão no README do dashboard.
 
 ## Modelo
 
 | Tabela      | Chave                | O que guarda                                         |
 |-------------|----------------------|------------------------------------------------------|
-| `devices`   | id do dispositivo    | Hash do token                                        |
+| `devices`   | id do dispositivo    | Hash do token; modelo, placa e cor do carro; se é simulado |
 | `events`    | UUID gerado na Pi    | Tipo, horário, score, sensores e janela (JSONB), nome da foto |
 | `telemetry` | (dispositivo, `ts`)  | Uma linha por segundo, em JSONB                      |
 | `health`    | id do dispositivo    | A última saúde recebida e quando chegou              |
@@ -181,7 +213,7 @@ imprimem `OK` no fim. O `test_e2e.py` precisa do `integracao/` ao lado.
 - **`test_app.py`:** autenticação do dispositivo e do dashboard; envio repetido
   sem duplicar; id local reaproveitado pela Pi; tipos de evento novos aceitos;
   foto antes do evento, foto que não é JPEG e foto grande demais; formato de
-  todas as rotas de consulta.
+  todas as rotas de consulta; frota (`/api/devices` e `?device=` separando os carros).
 - **`test_e2e.py`:** o `EventManager` e o `Sync` **de verdade** enviando para o
   backend numa porta local. Cobre:
   - 4G com telemetria, metadados e fotos, que chegam idênticas às da Pi, e foto que falha atrasando só a si mesma (RF20, RF21);
@@ -211,7 +243,9 @@ imprimem `OK` no fim. O `test_e2e.py` precisa do `integracao/` ao lado.
   arquivo é gravado antes da linha no banco. A pasta `fotos/` fica fora do git.
 - **Dashboard só com senha:** o servidor guarda fotos de motoristas. Sem
   `DASHBOARD_PASSWORD`, o dashboard não abre.
-- **Um dispositivo:** as consultas ainda não filtram por dispositivo.
+- **Frota simulada no banco:** os carros falsos são linhas comuns, com
+  `devices.simulated = true`. Assim o dashboard trata todos do mesmo jeito,
+  e um token aleatório descartado impede que alguém envie dados como eles.
 
 ## Pendências
 
@@ -219,5 +253,3 @@ imprimem `OK` no fim. O `test_e2e.py` precisa do `integracao/` ao lado.
   criada pela equipe. Em muitos planos gratuitos o disco é apagado a cada
   reinício, e as fotos precisam de disco persistente.
 - **4G de verdade (T36.2):** depende do módulo SIM7670G e da Pi.
-- **Consulta de dispositivos (T35):** falta uma rota listando os dispositivos;
-  com mais de um veículo, as consultas ganham o id dele.

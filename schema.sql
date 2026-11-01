@@ -5,6 +5,11 @@ CREATE TABLE IF NOT EXISTS devices (
     token_hash TEXT NOT NULL,              -- sha256 do token; o token em si não fica no banco
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Carro onde o dispositivo está (tela da frota). simulated = carro falso do frota_demo.py.
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS model TEXT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS plate TEXT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS color TEXT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS simulated BOOLEAN NOT NULL DEFAULT false;
 
 -- Um evento por UUID gerado na Pi (RF12): o reenvio cai no mesmo id.
 CREATE TABLE IF NOT EXISTS events (
@@ -19,6 +24,7 @@ CREATE TABLE IF NOT EXISTS events (
     received_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS events_ts ON events (ts DESC);
+CREATE INDEX IF NOT EXISTS events_device_ts ON events (device_id, ts DESC);
 -- A Pi avisa se o evento tem foto: enquanto photo for NULL, ela espera o Wi-Fi.
 ALTER TABLE events ADD COLUMN IF NOT EXISTS photo_expected BOOLEAN NOT NULL DEFAULT false;
 
