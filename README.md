@@ -135,6 +135,15 @@ Para apagar tudo deles:
 python3 frota_demo.py --apagar
 ```
 
+Os carros andam pelo traçado das ruas guardado em `rotas_demo.json`. Ao mudar
+os pontos de passagem (`ROTA_*` no `frota_demo.py`), gere o arquivo de novo;
+o comando consulta o roteador público OSRM (dados do OpenStreetMap) e precisa
+de internet só nessa hora:
+
+```bash
+python3 frota_demo.py --gerar-rotas
+```
+
 ### Variáveis de ambiente
 
 | Variável             | Padrão            | Uso                                                |

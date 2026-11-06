@@ -17,13 +17,18 @@ Rotas:
 Roda no servidor, ao lado do backend, com o mesmo DATABASE_URL:
   python3 frota_demo.py            # cria os carros e os mantém andando (Ctrl+C para)
   python3 frota_demo.py --apagar   # remove os carros simulados e tudo deles
+  python3 frota_demo.py --gerar-rotas  # refaz rotas_demo.json pelas ruas (precisa de internet)
 """
 
+import bisect
+import json
 import math
+import os
 import random
 import secrets
 import sys
 import time
+import urllib.request
 import uuid
 import psycopg2.extras
 import app
@@ -40,69 +45,71 @@ Json = psycopg2.extras.Json
 # ROTAS: listas de (lat, lon) que os carros percorrem
 # ──────────────────────────────────────────────────────────────────────────────
 
-# sim-01: UTFPR (Av. Sete de Setembro) ↔ UFPR Politécnico (Jardim Botânico)
-# Trajeto diário urbano pelas avenidas Sete de Setembro e Pres. Affonso Camargo
+# Pontos de passagem: poucos e nas vias certas. O OSRM liga cada par pelo
+# caminho de carro mais rápido (--gerar-rotas); pontos demais e próximos
+# geravam zigue-zagues por ruas de mão única.
+
+# sim-01: UTFPR (Sete de Setembro) → Centro Politécnico da UFPR, ida e volta
+# (Silva Jardim, Viaduto Colorado, Omar Sabbag, Lothário Meissner)
 ROTA_UTFPR_UFPR = [
-    (-25.4395, -49.2687),  # UTFPR — Av. Sete de Setembro, 3165 (ponto inicial)
-    (-25.4393, -49.2675),  # Segue leste na Sete de Setembro
-    (-25.4392, -49.2660),  # Passa pela Vila Capanema / Mercado Municipal
-    (-25.4391, -49.2645),  # Aproximação do Centro Cívico
-    (-25.4395, -49.2620),  # Continuação pela Sete de Setembro
-    (-25.4400, -49.2600),  # Embarque na Av. Presidente Affonso Camargo
-    (-25.4410, -49.2580),  # Segue sentido Jardim Botânico
-    (-25.4420, -49.2560),  # Trecho central da Affonso Camargo
-    (-25.4430, -49.2540),  # Continua leste
-    (-25.4440, -49.2520),  # Aproximação do Jardim Botânico
-    (-25.4450, -49.2500),  # Região do Horto Municipal
-    (-25.4455, -49.2485),  # Vira na Av. Pref. Omar Gonçalves Sabbag
-    (-25.4458, -49.2470),  # UFPR Politécnico (SEPT) — ponto final
+    (-25.4395, -49.2687),  # UTFPR, sede Centro
+    (-25.4505, -49.2298),  # UFPR, Centro Politécnico
 ]
 
-# sim-02: Loop pelo Batel (tráfego intenso)
+# sim-02: loop pelo Batel (Carlos de Carvalho, Dom Pedro II, Vicente Machado, Pres. Taunay)
 ROTA_BATEL = [
-    (-25.4350, -49.2790),  # Norte do Batel
-    (-25.4340, -49.2810),  # Al. Dr. Carlos de Carvalho
-    (-25.4335, -49.2835),  # Continua
-    (-25.4340, -49.2860),  # Rua Comendador Araújo
-    (-25.4355, -49.2875),  # Sudoeste do Batel
-    (-25.4375, -49.2880),  # Av. do Batel
-    (-25.4390, -49.2870),  # Sudeste
-    (-25.4395, -49.2845),  # Rua Brigadeiro Franco
-    (-25.4390, -49.2820),  # Volta ao centro
-    (-25.4380, -49.2800),  # Nordeste
-    (-25.4365, -49.2790),  # Fecha o loop
-    (-25.4350, -49.2790),  # Ponto inicial
+    (-25.4350, -49.2790),
+    (-25.4340, -49.2860),
+    (-25.4390, -49.2870),
+    (-25.4390, -49.2820),
+    (-25.4350, -49.2790),  # fecha o loop
 ]
 
-# sim-03: BR-116 (Linha Verde / Contorno Sul) em alta velocidade
+# sim-03: Linha Verde (trecho urbano da BR-116), do Atuba ao Pinheirinho, ida e volta
 ROTA_BR116 = [
-    (-25.4050, -49.2550),  # Norte - região do Atuba
-    (-25.4150, -49.2570),  # Segue sul
-    (-25.4250, -49.2590),  # Linha Verde norte
-    (-25.4350, -49.2610),  # Centro-sul
-    (-25.4450, -49.2630),  # Região do Portão
-    (-25.4550, -49.2650),  # Contorno sul
-    (-25.4650, -49.2670),  # Sul
-    (-25.4750, -49.2690),  # Aproxima de São José dos Pinhais
-    (-25.4850, -49.2710),  # Sul da BR-116
-    (-25.4950, -49.2730),  # Extremo sul
+    (-25.3881, -49.2090),  # Atuba, Av. Marechal Mascarenhas de Moraes
+    (-25.5150, -49.2860),  # Pinheirinho
 ]
 
-# sim-04: Loop pelo Parque Barigui (rota turística)
+# sim-04: loop pelo Bigorrilho e Mercês, ao lado do Parque Barigui
 ROTA_BARIGUI = [
-    (-25.4250, -49.2920),  # Nordeste do parque
-    (-25.4235, -49.2945),  # Norte
-    (-25.4230, -49.2975),  # Noroeste
-    (-25.4240, -49.3000),  # Oeste
-    (-25.4260, -49.3015),  # Sudoeste
-    (-25.4285, -49.3020),  # Sul
-    (-25.4310, -49.3010),  # Sudeste
-    (-25.4325, -49.2985),  # Leste-sul
-    (-25.4320, -49.2955),  # Leste
-    (-25.4305, -49.2930),  # Nordeste
-    (-25.4280, -49.2915),  # Fecha norte
-    (-25.4250, -49.2920),  # Ponto inicial
+    (-25.4250, -49.2920),
+    (-25.4240, -49.3000),
+    (-25.4310, -49.3010),
+    (-25.4320, -49.2955),
+    (-25.4250, -49.2920),  # fecha o loop
 ]
+
+
+# Os pontos acima ligados por retas cortam quarteirões. rotas_demo.json guarda o
+# caminho de carro pelas ruas que passa por eles (gerado com --gerar-rotas).
+ROTAS = {"utfpr_ufpr": ROTA_UTFPR_UFPR, "batel": ROTA_BATEL,
+         "br116": ROTA_BR116, "barigui": ROTA_BARIGUI}
+ROTAS_ARQUIVO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rotas_demo.json")
+
+if os.path.exists(ROTAS_ARQUIVO):
+    with open(ROTAS_ARQUIVO) as f:
+        _pelas_ruas = json.load(f)
+    ROTA_UTFPR_UFPR, ROTA_BATEL, ROTA_BR116, ROTA_BARIGUI = (
+        [tuple(p) for p in _pelas_ruas[nome]] for nome in ROTAS)
+
+
+def gerar_rotas():
+    """Pede ao OSRM público (dados do OpenStreetMap) o caminho de carro pelas ruas."""
+    pelas_ruas = {}
+    for nome, pontos in ROTAS.items():
+        coords = ";".join(f"{lon},{lat}" for lat, lon in pontos)
+        pedido = urllib.request.Request(
+            f"https://router.project-osrm.org/route/v1/driving/{coords}"
+            "?overview=full&geometries=geojson",
+            headers={"User-Agent": "V-GUARD frota_demo (projeto academico UTFPR)"})
+        with urllib.request.urlopen(pedido, timeout=30) as resposta:
+            linha = json.load(resposta)["routes"][0]["geometry"]["coordinates"]
+        pelas_ruas[nome] = [[round(lat, 6), round(lon, 6)] for lon, lat in linha]
+        print(f"{nome}: {len(pontos)} pontos viraram {len(linha)} pelas ruas")
+    with open(ROTAS_ARQUIVO, "w") as f:
+        json.dump(pelas_ruas, f, separators=(",", ":"))
+    print("gravado em", ROTAS_ARQUIVO)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -152,23 +159,20 @@ def interpolate_position(waypoints, cum_dists, distance):
     if total == 0:
         return waypoints[0]
 
-    # Limita a distância ao total
-    distance = distance % total if total > 0 else 0
+    distance = distance % total
 
-    # Encontra o segmento
-    for i in range(1, len(cum_dists)):
-        if distance <= cum_dists[i]:
-            seg_start = cum_dists[i - 1]
-            seg_end = cum_dists[i]
-            seg_len = seg_end - seg_start
-            if seg_len == 0:
-                return waypoints[i]
-            frac = (distance - seg_start) / seg_len
-            lat = waypoints[i-1][0] + frac * (waypoints[i][0] - waypoints[i-1][0])
-            lon = waypoints[i-1][1] + frac * (waypoints[i][1] - waypoints[i-1][1])
-            return (lat, lon)
+    # Segmento que contém a distância (bisseção: as rotas pelas ruas são longas)
+    i = max(1, min(bisect.bisect_left(cum_dists, distance), len(cum_dists) - 1))
+    seg_start, seg_end = cum_dists[i - 1], cum_dists[i]
+    if seg_end == seg_start:
+        return waypoints[i]
+    frac = (distance - seg_start) / (seg_end - seg_start)
+    lat = waypoints[i-1][0] + frac * (waypoints[i][0] - waypoints[i-1][0])
+    lon = waypoints[i-1][1] + frac * (waypoints[i][1] - waypoints[i-1][1])
+    return (lat, lon)
 
-    return waypoints[-1]
+
+_CUM_DISTS = {}
 
 
 def get_position(car_index, t):
@@ -185,21 +189,12 @@ def get_position(car_index, t):
         else:
             return (-25.4350, -49.3000)  # Garagem
 
-    # Converte velocidade para m/s
-    speed_ms = speed_kmh / 3.6
+    # Distância = integral da velocidade. Velocidade atual × t (t ~ 1,8 bilhão
+    # de segundos) fazia o carro pular centenas de metros a cada segundo.
+    distance = speed_kmh / 3.6 * traffic(car_index, t)[1]
 
-    # Adiciona variação de velocidade (tráfego)
-    variation = 0.7 + 0.3 * math.sin(t / 30 + car_index * 2)
-    if car[0] == "sim-02":  # Batel: mais variação (semáforos)
-        variation = 0.4 + 0.6 * abs(math.sin(t / 20 + car_index))
-    elif car[0] == "sim-03":  # BR-116: mais constante
-        variation = 0.9 + 0.1 * math.sin(t / 60)
-
-    effective_speed = speed_ms * variation
-    distance = effective_speed * t
-
-    # Pré-computa distâncias da rota (cache simples)
-    cum_dists = precompute_route(route)
+    # Distâncias acumuladas: uma vez por rota (o id da lista identifica a rota)
+    cum_dists = _CUM_DISTS.get(id(route)) or _CUM_DISTS.setdefault(id(route), precompute_route(route))
     total_dist = cum_dists[-1]
 
     if mode == "loop":
@@ -213,8 +208,6 @@ def get_position(car_index, t):
             pos = interpolate_position(route, cum_dists, dist_in_cycle)
         else:
             pos = interpolate_position(route, cum_dists, cycle - dist_in_cycle)
-    else:
-        pos = route[0]
 
     return pos
 
@@ -228,13 +221,21 @@ def get_speed(car_index, t):
     if mode == "parado" or speed_kmh == 0:
         return 0.0
 
-    variation = 0.7 + 0.3 * math.sin(t / 30 + car_index * 2)
-    if car[0] == "sim-02":
-        variation = 0.4 + 0.6 * abs(math.sin(t / 20 + car_index))
-    elif car[0] == "sim-03":
-        variation = 0.9 + 0.1 * math.sin(t / 60)
+    return round(speed_kmh * traffic(car_index, t)[0], 1)
 
-    return round(speed_kmh * variation, 1)
+
+def traffic(car_index, t):
+    """(fator de velocidade no instante t, integral exata do fator de 0 a t)."""
+    car_id = CARS[car_index][0]
+    if car_id == "sim-02":  # Batel, semáforos: 0,4 + 0,6·|sen(u)|, u = t/20 + k
+        def area(u):  # ∫₀ᵘ |sen x| dx, para u ≥ 0
+            return 2 * math.floor(u / math.pi) + 1 - math.cos(u % math.pi)
+        u0, u = car_index, t / 20 + car_index
+        return 0.4 + 0.6 * abs(math.sin(u)), 0.4 * t + 0.6 * 20 * (area(u) - area(u0))
+    # BR-116 mais constante; os demais, trânsito urbano: a + b·sen(t/T + fase)
+    a, b, T, phase = (0.9, 0.1, 60, 0) if car_id == "sim-03" else (0.7, 0.3, 30, car_index * 2)
+    return (a + b * math.sin(t / T + phase),
+            a * t - b * T * (math.cos(t / T + phase) - math.cos(phase)))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -346,24 +347,10 @@ def setup(now):
                     ets = random.uniform(start, now)
                     insert(cur, events=[event_row(k, ets)])
 
-            # Saúde
-            if car[7] != "sem contato":
-                insert(cur, health=[health_row(k, now)])
-            else:
-                # Sem contato: última comunicação há OFFLINE_FOR
-                old = now - OFFLINE_FOR
-                # CORREÇÃO: Criamos a variável data_json para reutilizar nos 2 lugares da query
-                data_json = Json({
-                    "ts": old, "last_contact": old, "link": "cellular",
-                    "pending": {"telemetry": 0, "events": 0, "photos": 0},
-                    "storage": {"used": 0.5, "free_bytes": int(0.5 * 29e9)},
-                    "temperature": 35.0, "cellular_bytes": 0
-                })
-                cur.execute(
-                    "INSERT INTO health VALUES (%s, %s, %s)"
-                    " ON CONFLICT (device_id) DO UPDATE SET received_at=%s, data=%s",
-                    (dev_id, old, data_json, old, data_json))
-                
+            # Saúde; o carro "sem contato" falou pela última vez há OFFLINE_FOR
+            insert(cur, health=[health_row(k, now - OFFLINE_FOR if car[7] == "sem contato" else now)])
+
+
 def erase():
     """Remove todos os dados simulados."""
     with app.db() as cur:
@@ -379,11 +366,6 @@ def run():
     last = time.time()
     setup(last)
     print("frota simulada no ar (rotas reais): %s (Ctrl+C para)" % ", ".join(IDS))
-    print("  sim-01: UTFPR ↔ UFPR (%.0f km/h)" % CARS[0][5])
-    print("  sim-02: Loop Batel (%.0f km/h)" % CARS[1][5])
-    print("  sim-03: BR-116 (%.0f km/h)" % CARS[2][5])
-    print("  sim-04: Parque Barigui (%.0f km/h)" % CARS[3][5])
-    print("  sim-05: parado | sim-06: sem contato")
 
     while True:
         time.sleep(TICK)
@@ -401,7 +383,9 @@ def run():
 
 
 if __name__ == "__main__":
-    if "--apagar" in sys.argv:
+    if "--gerar-rotas" in sys.argv:
+        gerar_rotas()
+    elif "--apagar" in sys.argv:
         app.connect()
         erase()
     else:
