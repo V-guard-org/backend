@@ -352,15 +352,18 @@ def setup(now):
             else:
                 # Sem contato: última comunicação há OFFLINE_FOR
                 old = now - OFFLINE_FOR
+                # CORREÇÃO: Criamos a variável data_json para reutilizar nos 2 lugares da query
+                data_json = Json({
+                    "ts": old, "last_contact": old, "link": "cellular",
+                    "pending": {"telemetry": 0, "events": 0, "photos": 0},
+                    "storage": {"used": 0.5, "free_bytes": int(0.5 * 29e9)},
+                    "temperature": 35.0, "cellular_bytes": 0
+                })
                 cur.execute(
                     "INSERT INTO health VALUES (%s, %s, %s)"
                     " ON CONFLICT (device_id) DO UPDATE SET received_at=%s, data=%s",
-                    (dev_id, old, Json({"ts": old, "last_contact": old, "link": "cellular",
-                                        "pending": {"telemetry": 0, "events": 0, "photos": 0},
-                                        "storage": {"used": 0.5, "free_bytes": int(0.5 * 29e9)},
-                                        "temperature": 35.0, "cellular_bytes": 0}), old))
-
-
+                    (dev_id, old, data_json, old, data_json))
+                
 def erase():
     """Remove todos os dados simulados."""
     with app.db() as cur:
