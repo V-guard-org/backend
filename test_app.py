@@ -153,6 +153,9 @@ def test_fleet(client):
     assert fleet["vguard-02"]["events_24h"] == 1 and fleet["vguard-02"]["last_contact"] is None
     assert fleet["vguard-01"]["lat"] is None and fleet["vguard-01"]["events_24h"] == 0
     assert not fleet["vguard-01"]["simulated"]
+    # Saúde da Pi na frota: vem do último POST /health; sem ele, fica vazia.
+    assert (fleet["vguard-01"]["temperature"], fleet["vguard-01"]["storage_used"]) == (51.5, 0.4)
+    assert (fleet["vguard-02"]["temperature"], fleet["vguard-02"]["storage_used"]) == (None, None)
     # Real e sem carro gravado: é o carro de teste da equipe.
     assert (fleet["vguard-01"]["model"], fleet["vguard-01"]["color"]) == ("Voyage", "Branco")
 

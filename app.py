@@ -262,11 +262,11 @@ def event_json(row):
 
 @app.get("/api/devices", dependencies=[Depends(viewer)])
 def devices():
-    """Resumo de cada carro para a tela da frota: carro, contato, posição e alertas."""
+    """Resumo de cada carro para a tela da frota: carro, contato, posição, saúde da Pi e alertas."""
     with db() as cur:
         cur.execute(
             "SELECT d.id, d.model, d.plate, d.color, d.simulated,"
-            " h.received_at AS last_contact, t.ts AS telemetry_ts, t.data AS telemetry,"
+            " h.received_at AS last_contact, h.data AS health, t.ts AS telemetry_ts, t.data AS telemetry,"
             " (SELECT COUNT(*) FROM events e WHERE e.device_id = d.id AND e.ts > %s) AS events_24h"
             " FROM devices d LEFT JOIN health h ON h.device_id = d.id"
             # Só a última linha: GPS sem fix nela = posição atual desconhecida.
@@ -281,6 +281,9 @@ def devices():
         data = r.pop("telemetry") or {}
         gps, obd = data.get("gps") or {}, data.get("obd") or {}
         r.update(lat=gps.get("lat"), lon=gps.get("lon"), speed=gps.get("speed", obd.get("speed")))
+        saude = r.pop("health") or {}
+        r.update(temperature=saude.get("temperature"),
+                 storage_used=(saude.get("storage") or {}).get("used"))
         if not r["simulated"]:
             r.update({k: r[k] or v for k, v in REAL_CAR.items()})
     return rows
